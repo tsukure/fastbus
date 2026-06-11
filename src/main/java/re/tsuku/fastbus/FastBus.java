@@ -8,6 +8,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.IdentityHashMap;
@@ -29,10 +30,10 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class FastBus {
     private static final Handler[] EMPTY_HANDLERS = new Handler[0];
 
-    private final Map<Class<?>, List<Handler>> handlers = new ConcurrentHashMap<>();
-    private final Map<Class<?>, Handler[]> dispatchCache = new ConcurrentHashMap<>();
+    private final Map<Class<?>, HandlerBucket> handlers = new ConcurrentHashMap<>();
     private final Map<Object, List<Handler>> owners = new IdentityHashMap<>();
     private final AtomicLong sequences = new AtomicLong();
+    private volatile long version;
     private final ClassValue<List<HandlerFactory>> subscriberFactories = new ClassValue<List<HandlerFactory>>() {
         @Override
         protected List<HandlerFactory> computeValue(Class<?> type) {
@@ -43,6 +44,12 @@ public final class FastBus {
         @Override
         protected Class<?>[] computeValue(Class<?> type) {
             return findDispatchTypes(type);
+        }
+    };
+    private final ClassValue<DispatchSlot> dispatchSlots = new ClassValue<DispatchSlot>() {
+        @Override
+        protected DispatchSlot computeValue(Class<?> type) {
+            return new DispatchSlot(type);
         }
     };
 
@@ -65,7 +72,7 @@ public final class FastBus {
                 addHandler(handler);
             }
             owners.put(owner, found);
-            dispatchCache.clear();
+            changeVersion();
         }
     }
 
@@ -83,7 +90,7 @@ public final class FastBus {
 
         Handler handler = new Handler(eventType, createListenerInvoker(listener), priority, nextSequence());
         addHandler(handler);
-        dispatchCache.clear();
+        changeVersion();
         return () -> unsubscribe(handler);
     }
 
@@ -101,7 +108,7 @@ public final class FastBus {
             for (Handler handler : ownedHandlers) {
                 removeHandler(handler);
             }
-            dispatchCache.clear();
+            changeVersion();
         }
     }
 
@@ -116,7 +123,7 @@ public final class FastBus {
             throw new NullPointerException("event");
         }
 
-        Handler[] snapshot = dispatchCache.computeIfAbsent(event.getClass(), this::createDispatchSnapshot);
+        Handler[] snapshot = dispatchSlots.get(event.getClass()).snapshot(version, this);
         for (Handler handler : snapshot) {
             handler.call(event);
         }
@@ -246,21 +253,20 @@ public final class FastBus {
     }
 
     private void addHandler(Handler handler) {
-        List<Handler> bucket = handlers.computeIfAbsent(handler.eventType, ignored -> new ArrayList<>());
+        HandlerBucket bucket = handlers.computeIfAbsent(handler.eventType, ignored -> new HandlerBucket());
         synchronized (bucket) {
             bucket.add(handler);
-            bucket.sort(Handler.ORDER);
         }
     }
 
     private void removeHandler(Handler handler) {
-        List<Handler> bucket = handlers.get(handler.eventType);
+        HandlerBucket bucket = handlers.get(handler.eventType);
         if (bucket == null) {
             return;
         }
         synchronized (bucket) {
             bucket.remove(handler);
-            if (bucket.isEmpty()) {
+            if (bucket.empty()) {
                 handlers.remove(handler.eventType, bucket);
             }
         }
@@ -269,17 +275,17 @@ public final class FastBus {
     private Handler[] createDispatchSnapshot(Class<?> eventType) {
         List<Handler> matching = new ArrayList<>();
         for (Class<?> dispatchType : dispatchTypes.get(eventType)) {
-            List<Handler> bucket = handlers.get(dispatchType);
+            HandlerBucket bucket = handlers.get(dispatchType);
             if (bucket != null) {
                 synchronized (bucket) {
-                    matching.addAll(bucket);
+                    bucket.addTo(matching);
                 }
             }
         }
         if (matching.isEmpty()) {
             return EMPTY_HANDLERS;
         }
-        matching.sort(Handler.ORDER);
+        Collections.sort(matching, Handler.ORDER);
         return matching.toArray(new Handler[0]);
     }
 
@@ -308,11 +314,15 @@ public final class FastBus {
 
     private void unsubscribe(Handler handler) {
         removeHandler(handler);
-        dispatchCache.clear();
+        changeVersion();
     }
 
     private long nextSequence() {
         return sequences.getAndIncrement();
+    }
+
+    private void changeVersion() {
+        version++;
     }
 
     @FunctionalInterface
@@ -326,9 +336,16 @@ public final class FastBus {
     }
 
     private static final class Handler {
-        private static final Comparator<Handler> ORDER = Comparator
-                .comparingInt((Handler handler) -> handler.priority)
-                .thenComparingLong(handler -> handler.sequence);
+        private static final Comparator<Handler> ORDER = new Comparator<Handler>() {
+            @Override
+            public int compare(Handler left, Handler right) {
+                int priorityOrder = Integer.compare(left.priority, right.priority);
+                if (priorityOrder != 0) {
+                    return priorityOrder;
+                }
+                return Long.compare(left.sequence, right.sequence);
+            }
+        };
 
         private final Class<? extends Event> eventType;
         private final EventInvoker invoker;
@@ -344,6 +361,105 @@ public final class FastBus {
 
         private void call(Event event) {
             invoker.call(event);
+        }
+    }
+
+    private static final class HandlerBucket {
+        private Handler[] handlers = EMPTY_HANDLERS;
+        private int size;
+
+        private void add(Handler handler) {
+            ensureCapacity(size + 1);
+
+            int priority = handler.priority;
+            long sequence = handler.sequence;
+            int index = size;
+
+            while (index > 0) {
+                int previous = index - 1;
+                Handler moved = handlers[previous];
+                if (priority > moved.priority) {
+                    break;
+                }
+                if (priority == moved.priority && sequence > moved.sequence) {
+                    break;
+                }
+
+                handlers[index] = moved;
+                index--;
+            }
+
+            handlers[index] = handler;
+            size++;
+        }
+
+        private void remove(Handler handler) {
+            int index = 0;
+            int limit = size;
+            while (index < limit && handlers[index] != handler) {
+                index++;
+            }
+            if (index == limit) {
+                return;
+            }
+
+            int last = size - 1;
+            while (index < last) {
+                int next = index + 1;
+                handlers[index] = handlers[next];
+                index = next;
+            }
+
+            handlers[last] = null;
+            size = last;
+        }
+
+        private void addTo(List<Handler> target) {
+            for (int index = 0, limit = size; index < limit; index++) {
+                target.add(handlers[index]);
+            }
+        }
+
+        private boolean empty() {
+            return size == 0;
+        }
+
+        private void ensureCapacity(int required) {
+            if (handlers.length >= required) {
+                return;
+            }
+
+            int capacity = handlers.length == 0 ? 4 : handlers.length << 1;
+            while (capacity < required) {
+                capacity <<= 1;
+            }
+            handlers = Arrays.copyOf(handlers, capacity);
+        }
+    }
+
+    private static final class DispatchSlot {
+        private final Class<?> eventType;
+        private volatile Handler[] snapshot = EMPTY_HANDLERS;
+        private volatile long version = -1;
+
+        private DispatchSlot(Class<?> eventType) {
+            this.eventType = eventType;
+        }
+
+        private Handler[] snapshot(long currentVersion, FastBus bus) {
+            Handler[] current = snapshot;
+            if (version == currentVersion) {
+                return current;
+            }
+            return update(currentVersion, bus);
+        }
+
+        private synchronized Handler[] update(long currentVersion, FastBus bus) {
+            if (version != currentVersion) {
+                snapshot = bus.createDispatchSnapshot(eventType);
+                version = currentVersion;
+            }
+            return snapshot;
         }
     }
 }
