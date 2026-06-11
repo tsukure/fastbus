@@ -34,7 +34,7 @@ for snapshots, use:
 
 create an event:
 
-```text
+```java
 import re.tsuku.fastbus.Event;
 
 public final class LoginEvent implements Event {
@@ -52,7 +52,7 @@ public final class LoginEvent implements Event {
 
 subscribe with annotated methods:
 
-```text
+```java
 import re.tsuku.fastbus.FastBus;
 import re.tsuku.fastbus.Subscribe;
 
@@ -73,7 +73,7 @@ bus.unsubscribe(logger);
 
 subscribe with listener functions:
 
-```text
+```java
 import re.tsuku.fastbus.EventPriority;
 import re.tsuku.fastbus.FastBus;
 import re.tsuku.fastbus.Subscription;
@@ -92,7 +92,7 @@ subscription.unsubscribe();
 
 cancelable events can extend `CancellableEvent`:
 
-```text
+```java
 import re.tsuku.fastbus.CancellableEvent;
 
 public final class MessageEvent extends CancellableEvent {
