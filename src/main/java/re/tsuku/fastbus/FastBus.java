@@ -450,10 +450,6 @@ public final class FastBus {
             this.priority = priority;
             this.sequence = sequence;
         }
-
-        private void call(Event event) {
-            invoker.call(event);
-        }
     }
 
     private static final class HandlerBucket {
