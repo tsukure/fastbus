@@ -6,6 +6,7 @@ import java.lang.invoke.LambdaMetafactory;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
@@ -180,8 +181,9 @@ public final class FastBus {
 
         method.setAccessible(true);
         try {
-            MethodHandle handle = MethodHandles.lookup().unreflect(method);
-            MethodInvokerFactory invokerFactory = createMethodInvokerFactory(method, handle);
+            MethodHandles.Lookup lookup = lookup(method.getDeclaringClass());
+            MethodHandle handle = lookup.unreflect(method);
+            MethodInvokerFactory invokerFactory = createMethodInvokerFactory(method, lookup, handle);
             if (throwsCheckedException(method)) {
                 return (bus, owner) -> new Handler(eventType, wrapChecked(method, invokerFactory.create(owner)),
                         priority, bus.nextSequence());
@@ -190,6 +192,42 @@ public final class FastBus {
                     bus.nextSequence());
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("unable to access listener method: " + method, exception);
+        }
+    }
+
+    private static MethodHandles.Lookup lookup(Class<?> type) {
+        MethodHandles.Lookup lookup = privateLookup(type);
+        if (lookup != null) {
+            return lookup;
+        }
+        return java8Lookup(type);
+    }
+
+    private static MethodHandles.Lookup privateLookup(Class<?> type) {
+        try {
+            Method method = MethodHandles.class.getMethod(
+                    "privateLookupIn",
+                    Class.class,
+                    MethodHandles.Lookup.class);
+            return (MethodHandles.Lookup) method.invoke(null, type, MethodHandles.lookup());
+        } catch (ReflectiveOperationException exception) {
+            return null;
+        }
+    }
+
+    private static MethodHandles.Lookup java8Lookup(Class<?> type) {
+        try {
+            Constructor<MethodHandles.Lookup> constructor = MethodHandles.Lookup.class.getDeclaredConstructor(
+                    Class.class,
+                    int.class);
+            constructor.setAccessible(true);
+            int modes = MethodHandles.Lookup.PUBLIC
+                    | MethodHandles.Lookup.PRIVATE
+                    | MethodHandles.Lookup.PROTECTED
+                    | MethodHandles.Lookup.PACKAGE;
+            return constructor.newInstance(type, modes);
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException("unable to create listener lookup: " + type.getName(), exception);
         }
     }
 
@@ -242,10 +280,11 @@ public final class FastBus {
         return ((Class<?>) eventType).asSubclass(Event.class);
     }
 
-    private static MethodInvokerFactory createMethodInvokerFactory(Method method, MethodHandle handle) {
+    private static MethodInvokerFactory createMethodInvokerFactory(Method method, MethodHandles.Lookup lookup,
+            MethodHandle handle) {
         try {
             CallSite site = LambdaMetafactory.metafactory(
-                    MethodHandles.lookup(),
+                    lookup,
                     "call",
                     MethodType.methodType(EventInvoker.class, method.getDeclaringClass()),
                     MethodType.methodType(void.class, Event.class),

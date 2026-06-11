@@ -44,6 +44,17 @@ public final class FastBusTest {
     }
 
     @Test
+    public void privateAnnotatedMethodsReceiveMatchingEvents() {
+        FastBus bus = new FastBus();
+        PrivateAnnotatedSubscriber subscriber = new PrivateAnnotatedSubscriber();
+
+        bus.subscribe(subscriber);
+        bus.post(new SimpleEvent());
+
+        assertEquals(1, subscriber.count);
+    }
+
+    @Test
     public void annotatedListenerFieldsReceiveMatchingEvents() {
         FastBus bus = new FastBus();
         FieldSubscriber subscriber = new FieldSubscriber();
@@ -220,6 +231,15 @@ public final class FastBusTest {
 
         @Subscribe
         public void onSimple(SimpleEvent event) {
+            count++;
+        }
+    }
+
+    private static final class PrivateAnnotatedSubscriber {
+        int count;
+
+        @Subscribe
+        private void onSimple(SimpleEvent event) {
             count++;
         }
     }
