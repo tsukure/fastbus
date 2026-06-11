@@ -20,9 +20,10 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * a small typed event bus.
  *
- * <p>subscriptions are indexed by event type. posting uses a cached immutable
- * handler snapshot for the concrete event class, so dispatch does not scan
- * unrelated listeners.</p>
+ * <p>
+ * subscriptions are indexed by event type. posting uses a cached immutable handler snapshot for the concrete event
+ * class, so dispatch does not scan unrelated listeners.
+ * </p>
  */
 public final class FastBus {
     private static final Handler[] EMPTY_HANDLERS = new Handler[0];
@@ -78,7 +79,7 @@ public final class FastBus {
             throw new NullPointerException("listener");
         }
 
-        Handler handler = new Handler(eventType, event -> listener.call(eventType.cast(event)), priority);
+        Handler handler = new Handler(eventType, createListenerInvoker(listener), priority);
         addHandler(handler);
         dispatchCache.clear();
         return () -> unsubscribe(handler);
@@ -170,8 +171,7 @@ public final class FastBus {
             return owner -> new Handler(
                     eventType.asSubclass(Event.class),
                     createMethodInvoker(owner, method, handle),
-                    priority
-            );
+                    priority);
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("unable to access listener method: " + method, exception);
         }
@@ -194,21 +194,22 @@ public final class FastBus {
             if (listener == null) {
                 throw new IllegalArgumentException("@Subscribe listener field is null: " + field);
             }
-            return createListenerHandler(eventType, listener, owner, priority);
+            return createListenerHandler(eventType, listener, priority);
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("unable to read listener field: " + field, exception);
         }
     }
 
-    private <T extends Event> Handler createListenerHandler(
-            Class<T> eventType,
-            Listener<? extends Event> listener,
-            Object owner,
-            int priority
-    ) {
+    private <T extends Event> Handler createListenerHandler(Class<T> eventType, Listener<? extends Event> listener,
+            int priority) {
         @SuppressWarnings("unchecked")
         Listener<? super T> typedListener = (Listener<? super T>) listener;
-        return new Handler(eventType, event -> typedListener.call(eventType.cast(event)), priority);
+        return new Handler(eventType, createListenerInvoker(typedListener), priority);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T extends Event> EventInvoker createListenerInvoker(Listener<? super T> listener) {
+        return event -> listener.call((T) event);
     }
 
     private Class<? extends Event> listenerEventType(Type type, Field field) {
@@ -225,9 +226,7 @@ public final class FastBus {
     }
 
     private EventInvoker createMethodInvoker(Object owner, Method method, MethodHandle handle) {
-        MethodHandle boundHandle = handle
-                    .bindTo(owner)
-                    .asType(MethodType.methodType(void.class, Event.class));
+        MethodHandle boundHandle = handle.bindTo(owner).asType(MethodType.methodType(void.class, Event.class));
         return event -> invoke(boundHandle, method, event);
     }
 
