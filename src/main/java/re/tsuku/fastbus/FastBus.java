@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * a small typed event bus.
@@ -30,7 +31,8 @@ public final class FastBus {
 
     private final Map<Class<?>, List<Handler>> handlers = new ConcurrentHashMap<>();
     private final Map<Class<?>, Handler[]> dispatchCache = new ConcurrentHashMap<>();
-    private final Map<Object, List<Handler>> owners = Collections.synchronizedMap(new IdentityHashMap<>());
+    private final Map<Object, List<Handler>> owners = new IdentityHashMap<>();
+    private final AtomicLong sequences = new AtomicLong();
     private final ClassValue<List<HandlerFactory>> subscriberFactories = new ClassValue<List<HandlerFactory>>() {
         @Override
         protected List<HandlerFactory> computeValue(Class<?> type) {
@@ -79,7 +81,7 @@ public final class FastBus {
             throw new NullPointerException("listener");
         }
 
-        Handler handler = new Handler(eventType, createListenerInvoker(listener), priority);
+        Handler handler = new Handler(eventType, createListenerInvoker(listener), priority, nextSequence());
         addHandler(handler);
         dispatchCache.clear();
         return () -> unsubscribe(handler);
@@ -171,7 +173,8 @@ public final class FastBus {
             return owner -> new Handler(
                     eventType.asSubclass(Event.class),
                     createMethodInvoker(owner, method, handle),
-                    priority);
+                    priority,
+                    nextSequence());
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("unable to access listener method: " + method, exception);
         }
@@ -204,7 +207,7 @@ public final class FastBus {
             int priority) {
         @SuppressWarnings("unchecked")
         Listener<? super T> typedListener = (Listener<? super T>) listener;
-        return new Handler(eventType, createListenerInvoker(typedListener), priority);
+        return new Handler(eventType, createListenerInvoker(typedListener), priority, nextSequence());
     }
 
     @SuppressWarnings("unchecked")
@@ -308,6 +311,10 @@ public final class FastBus {
         dispatchCache.clear();
     }
 
+    private long nextSequence() {
+        return sequences.getAndIncrement();
+    }
+
     @FunctionalInterface
     private interface EventInvoker {
         void call(Event event);
@@ -323,20 +330,16 @@ public final class FastBus {
                 .comparingInt((Handler handler) -> handler.priority)
                 .thenComparingLong(handler -> handler.sequence);
 
-        private static long nextSequence;
-
         private final Class<? extends Event> eventType;
         private final EventInvoker invoker;
         private final int priority;
         private final long sequence;
 
-        private Handler(Class<? extends Event> eventType, EventInvoker invoker, int priority) {
+        private Handler(Class<? extends Event> eventType, EventInvoker invoker, int priority, long sequence) {
             this.eventType = eventType;
             this.invoker = invoker;
             this.priority = priority;
-            synchronized (Handler.class) {
-                this.sequence = nextSequence++;
-            }
+            this.sequence = sequence;
         }
 
         private void call(Event event) {
