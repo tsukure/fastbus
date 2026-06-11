@@ -4,7 +4,7 @@
   <a href="https://github.com/tsukure/fastbus/releases/latest"><img src="https://img.shields.io/github/v/release/tsukure/fastbus?style=flat-square" alt="latest release"></a>
   <a href="https://maven.tsuku.re/releases/re/tsuku/fastbus/"><img src="https://img.shields.io/maven-metadata/v?metadataUrl=https%3A%2F%2Fmaven.tsuku.re%2Freleases%2Fre%2Ftsuku%2Ffastbus%2Fmaven-metadata.xml&style=flat-square&label=maven" alt="maven"></a>
   <a href="https://github.com/tsukure/fastbus/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/tsukure/fastbus/release.yml?branch=main&style=flat-square" alt="release workflow"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/tsukure/fastbus?style=flat-square" alt="license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="license"></a>
 </p>
 
 `fastbus` is a small java event bus for projects that need simple typed events without a framework.
