@@ -8,6 +8,7 @@
 </p>
 
 `fastbus` is a blazing fast java event bus for projects that need simple typed events without a framework.
+it targets java 1.8 for compatibility.
 
 ## install
 
