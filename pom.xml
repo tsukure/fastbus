@@ -26,7 +26,19 @@
         <maven.compiler.target>1.8</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jmh.version>1.37</jmh.version>
+        <junit.version>4.13.2</junit.version>
+        <guava.version>33.6.0-jre</guava.version>
+        <greenrobot-eventbus.version>3.3.1</greenrobot-eventbus.version>
     </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 
     <distributionManagement>
         <repository>
@@ -66,6 +78,16 @@
                     </execution>
                 </executions>
             </plugin>
+            <plugin>
+                <groupId>net.revelc.code.formatter</groupId>
+                <artifactId>formatter-maven-plugin</artifactId>
+                <version>2.24.1</version>
+                <configuration>
+                    <configFile>${project.basedir}/config/formatter/eclipse-java.xml</configFile>
+                    <encoding>${project.build.sourceEncoding}</encoding>
+                    <lineEnding>LF</lineEnding>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 
@@ -83,6 +105,16 @@
                     <artifactId>jmh-generator-annprocess</artifactId>
                     <version>${jmh.version}</version>
                     <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>com.google.guava</groupId>
+                    <artifactId>guava</artifactId>
+                    <version>${guava.version}</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.greenrobot</groupId>
+                    <artifactId>eventbus-java</artifactId>
+                    <version>${greenrobot-eventbus.version}</version>
                 </dependency>
             </dependencies>
             <build>
