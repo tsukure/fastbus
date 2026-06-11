@@ -182,11 +182,11 @@ public final class FastBus {
         try {
             MethodHandle handle = MethodHandles.lookup().unreflect(method);
             MethodInvokerFactory invokerFactory = createMethodInvokerFactory(method, handle);
-            if (invokerFactory != null) {
-                return (bus, owner) -> new Handler(eventType, invokerFactory.create(owner), priority,
-                        bus.nextSequence());
+            if (throwsCheckedException(method)) {
+                return (bus, owner) -> new Handler(eventType, wrapChecked(method, invokerFactory.create(owner)),
+                        priority, bus.nextSequence());
             }
-            return (bus, owner) -> new Handler(eventType, createMethodInvoker(owner, method, handle), priority,
+            return (bus, owner) -> new Handler(eventType, invokerFactory.create(owner), priority,
                     bus.nextSequence());
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("unable to access listener method: " + method, exception);
@@ -242,16 +242,7 @@ public final class FastBus {
         return ((Class<?>) eventType).asSubclass(Event.class);
     }
 
-    private static EventInvoker createMethodInvoker(Object owner, Method method, MethodHandle handle) {
-        MethodHandle boundHandle = handle.bindTo(owner).asType(MethodType.methodType(void.class, Event.class));
-        return event -> invoke(boundHandle, method, event);
-    }
-
     private static MethodInvokerFactory createMethodInvokerFactory(Method method, MethodHandle handle) {
-        if (throwsCheckedException(method)) {
-            return null;
-        }
-
         try {
             CallSite site = LambdaMetafactory.metafactory(
                     MethodHandles.lookup(),
@@ -261,13 +252,13 @@ public final class FastBus {
                     handle,
                     MethodType.methodType(void.class, method.getParameterTypes()[0]));
             MethodHandle factory = site.getTarget().asType(MethodType.methodType(EventInvoker.class, Object.class));
-            return owner -> createMethodInvoker(factory, owner);
-        } catch (Throwable ignored) {
-            return null;
+            return owner -> bindMethodInvoker(factory, owner);
+        } catch (Throwable throwable) {
+            throw new IllegalStateException("unable to create listener method invoker: " + method, throwable);
         }
     }
 
-    private static EventInvoker createMethodInvoker(MethodHandle factory, Object owner) {
+    private static EventInvoker bindMethodInvoker(MethodHandle factory, Object owner) {
         try {
             return (EventInvoker) factory.invokeExact(owner);
         } catch (RuntimeException exception) {
@@ -277,6 +268,10 @@ public final class FastBus {
         } catch (Throwable throwable) {
             throw new IllegalStateException("unable to bind listener method", throwable);
         }
+    }
+
+    private static EventInvoker wrapChecked(Method method, EventInvoker invoker) {
+        return event -> invokeChecked(method, invoker, event);
     }
 
     private static boolean throwsCheckedException(Method method) {
@@ -289,9 +284,9 @@ public final class FastBus {
         return false;
     }
 
-    private static void invoke(MethodHandle handle, Method method, Event event) {
+    private static void invokeChecked(Method method, EventInvoker invoker, Event event) {
         try {
-            handle.invokeExact(event);
+            invoker.call(event);
         } catch (RuntimeException exception) {
             throw exception;
         } catch (Error error) {
