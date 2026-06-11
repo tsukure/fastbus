@@ -1,6 +1,8 @@
 package re.tsuku.fastbus;
 
 import java.lang.reflect.Field;
+import java.lang.invoke.CallSite;
+import java.lang.invoke.LambdaMetafactory;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
@@ -29,23 +31,23 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class FastBus {
     private static final Handler[] EMPTY_HANDLERS = new Handler[0];
-
-    private final Map<Class<?>, HandlerBucket> handlers = new ConcurrentHashMap<>();
-    private final Map<Object, List<Handler>> owners = new IdentityHashMap<>();
-    private final AtomicLong sequences = new AtomicLong();
-    private volatile long version;
-    private final ClassValue<List<HandlerFactory>> subscriberFactories = new ClassValue<List<HandlerFactory>>() {
+    private static final ClassValue<List<HandlerFactory>> SUBSCRIBER_FACTORIES = new ClassValue<List<HandlerFactory>>() {
         @Override
         protected List<HandlerFactory> computeValue(Class<?> type) {
             return findSubscriberFactories(type);
         }
     };
-    private final ClassValue<Class<?>[]> dispatchTypes = new ClassValue<Class<?>[]>() {
+    private static final ClassValue<Class<?>[]> DISPATCH_TYPES = new ClassValue<Class<?>[]>() {
         @Override
         protected Class<?>[] computeValue(Class<?> type) {
             return findDispatchTypes(type);
         }
     };
+
+    private final Map<Class<?>, HandlerBucket> handlers = new ConcurrentHashMap<>();
+    private final Map<Object, List<Handler>> owners = new IdentityHashMap<>();
+    private final AtomicLong sequences = new AtomicLong();
+    private volatile long version;
     private final ClassValue<DispatchSlot> dispatchSlots = new ClassValue<DispatchSlot>() {
         @Override
         protected DispatchSlot computeValue(Class<?> type) {
@@ -132,13 +134,13 @@ public final class FastBus {
 
     private List<Handler> scan(Object owner) {
         List<Handler> found = new ArrayList<>();
-        for (HandlerFactory factory : subscriberFactories.get(owner.getClass())) {
-            found.add(factory.create(owner));
+        for (HandlerFactory factory : SUBSCRIBER_FACTORIES.get(owner.getClass())) {
+            found.add(factory.create(this, owner));
         }
         return found;
     }
 
-    private List<HandlerFactory> findSubscriberFactories(Class<?> ownerType) {
+    private static List<HandlerFactory> findSubscriberFactories(Class<?> ownerType) {
         List<HandlerFactory> found = new ArrayList<>();
         Class<?> type = ownerType;
         while (type != null && type != Object.class) {
@@ -164,30 +166,33 @@ public final class FastBus {
         return Collections.unmodifiableList(found);
     }
 
-    private HandlerFactory createMethodFactory(Method method, int priority) {
+    private static HandlerFactory createMethodFactory(Method method, int priority) {
         if (method.getParameterCount() != 1) {
             throw new IllegalArgumentException("@Subscribe method must have exactly one parameter: " + method);
         }
 
-        Class<?> eventType = method.getParameterTypes()[0];
-        if (!Event.class.isAssignableFrom(eventType)) {
+        Class<?> rawEventType = method.getParameterTypes()[0];
+        if (!Event.class.isAssignableFrom(rawEventType)) {
             throw new IllegalArgumentException("@Subscribe method parameter must implement event: " + method);
         }
+        Class<? extends Event> eventType = rawEventType.asSubclass(Event.class);
 
         method.setAccessible(true);
         try {
             MethodHandle handle = MethodHandles.lookup().unreflect(method);
-            return owner -> new Handler(
-                    eventType.asSubclass(Event.class),
-                    createMethodInvoker(owner, method, handle),
-                    priority,
-                    nextSequence());
+            MethodEventInvoker methodInvoker = createMethodEventInvoker(method, handle);
+            if (methodInvoker != null) {
+                return (bus, owner) -> new Handler(eventType, event -> methodInvoker.call(owner, event), priority,
+                        bus.nextSequence());
+            }
+            return (bus, owner) -> new Handler(eventType, createMethodInvoker(owner, method, handle), priority,
+                    bus.nextSequence());
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("unable to access listener method: " + method, exception);
         }
     }
 
-    private HandlerFactory createFieldFactory(Field field, int priority) {
+    private static HandlerFactory createFieldFactory(Field field, int priority) {
         if (!Listener.class.isAssignableFrom(field.getType())) {
             throw new IllegalArgumentException("@Subscribe field must be a listener: " + field);
         }
@@ -195,16 +200,17 @@ public final class FastBus {
         Class<? extends Event> eventType = listenerEventType(field.getGenericType(), field);
         field.setAccessible(true);
 
-        return owner -> createFieldHandler(owner, field, eventType, priority);
+        return (bus, owner) -> createFieldHandler(bus, owner, field, eventType, priority);
     }
 
-    private Handler createFieldHandler(Object owner, Field field, Class<? extends Event> eventType, int priority) {
+    private static Handler createFieldHandler(FastBus bus, Object owner, Field field, Class<? extends Event> eventType,
+            int priority) {
         try {
             Listener<? extends Event> listener = (Listener<? extends Event>) field.get(owner);
             if (listener == null) {
                 throw new IllegalArgumentException("@Subscribe listener field is null: " + field);
             }
-            return createListenerHandler(eventType, listener, priority);
+            return bus.createListenerHandler(eventType, listener, priority);
         } catch (IllegalAccessException exception) {
             throw new IllegalStateException("unable to read listener field: " + field, exception);
         }
@@ -222,7 +228,7 @@ public final class FastBus {
         return event -> listener.call((T) event);
     }
 
-    private Class<? extends Event> listenerEventType(Type type, Field field) {
+    private static Class<? extends Event> listenerEventType(Type type, Field field) {
         if (!(type instanceof ParameterizedType)) {
             throw new IllegalArgumentException("@Subscribe listener field must declare its event type: " + field);
         }
@@ -235,12 +241,41 @@ public final class FastBus {
         return ((Class<?>) eventType).asSubclass(Event.class);
     }
 
-    private EventInvoker createMethodInvoker(Object owner, Method method, MethodHandle handle) {
+    private static EventInvoker createMethodInvoker(Object owner, Method method, MethodHandle handle) {
         MethodHandle boundHandle = handle.bindTo(owner).asType(MethodType.methodType(void.class, Event.class));
         return event -> invoke(boundHandle, method, event);
     }
 
-    private void invoke(MethodHandle handle, Method method, Event event) {
+    private static MethodEventInvoker createMethodEventInvoker(Method method, MethodHandle handle) {
+        if (throwsCheckedException(method)) {
+            return null;
+        }
+
+        try {
+            CallSite site = LambdaMetafactory.metafactory(
+                    MethodHandles.lookup(),
+                    "call",
+                    MethodType.methodType(MethodEventInvoker.class),
+                    MethodType.methodType(void.class, Object.class, Event.class),
+                    handle,
+                    MethodType.methodType(void.class, method.getDeclaringClass(), method.getParameterTypes()[0]));
+            return (MethodEventInvoker) site.getTarget().invokeExact();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static boolean throwsCheckedException(Method method) {
+        for (Class<?> exceptionType : method.getExceptionTypes()) {
+            if (!RuntimeException.class.isAssignableFrom(exceptionType)
+                    && !Error.class.isAssignableFrom(exceptionType)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void invoke(MethodHandle handle, Method method, Event event) {
         try {
             handle.invokeExact(event);
         } catch (RuntimeException exception) {
@@ -274,7 +309,7 @@ public final class FastBus {
 
     private Handler[] createDispatchSnapshot(Class<?> eventType) {
         List<Handler> matching = new ArrayList<>();
-        for (Class<?> dispatchType : dispatchTypes.get(eventType)) {
+        for (Class<?> dispatchType : DISPATCH_TYPES.get(eventType)) {
             HandlerBucket bucket = handlers.get(dispatchType);
             if (bucket != null) {
                 synchronized (bucket) {
@@ -289,7 +324,7 @@ public final class FastBus {
         return matching.toArray(new Handler[0]);
     }
 
-    private Class<?>[] findDispatchTypes(Class<?> eventType) {
+    private static Class<?>[] findDispatchTypes(Class<?> eventType) {
         Set<Class<?>> types = new LinkedHashSet<>();
         Class<?> current = eventType;
         while (current != null && current != Object.class) {
@@ -303,7 +338,7 @@ public final class FastBus {
         return types.toArray(new Class<?>[0]);
     }
 
-    private void collectEventInterfaces(Class<?> type, Set<Class<?>> types) {
+    private static void collectEventInterfaces(Class<?> type, Set<Class<?>> types) {
         for (Class<?> interfaceType : type.getInterfaces()) {
             if (Event.class.isAssignableFrom(interfaceType)) {
                 types.add(interfaceType);
@@ -331,8 +366,13 @@ public final class FastBus {
     }
 
     @FunctionalInterface
+    private interface MethodEventInvoker {
+        void call(Object owner, Event event);
+    }
+
+    @FunctionalInterface
     private interface HandlerFactory {
-        Handler create(Object owner);
+        Handler create(FastBus bus, Object owner);
     }
 
     private static final class Handler {
