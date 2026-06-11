@@ -1,4 +1,4 @@
-# fastbus
+<h1 align="center">fastbus</h1>
 
 `fastbus` is a small java event bus for projects that need simple typed events without a framework.
 
@@ -114,6 +114,18 @@ public final class MessageEvent extends CancellableEvent {
 ./mvnw clean test
 ```
 
+format sources:
+
+```bash
+./mvnw formatter:format
+```
+
+check formatting:
+
+```bash
+./mvnw formatter:validate
+```
+
 ## benchmarks
 
 build the jmh benchmark jar:
@@ -133,6 +145,21 @@ for a shorter local run:
 ```bash
 java -jar target/benchmarks.jar 'post_.*|subscribe_.*' -wi 2 -i 3 -f 1
 ```
+
+rough local jmh numbers, averaged from a few short runs on jdk 21:
+
+| benchmark                                 |  throughput |
+|-------------------------------------------|------------:|
+| fastbus direct post                       | ~220m ops/s |
+| fastbus annotated post                    | ~165m ops/s |
+| greenrobot eventbus post                  |  ~16m ops/s |
+| guava eventbus post                       |  ~10m ops/s |
+| fastbus direct subscribe/unsubscribe      | ~6.5m ops/s |
+| guava eventbus subscribe/unsubscribe      | ~5.5m ops/s |
+| fastbus annotated subscribe/unsubscribe   | ~900k ops/s |
+| greenrobot eventbus subscribe/unsubscribe | ~200k ops/s |
+
+your mileage may vary a bit depending on jvm, hardware, and listener shape.
 
 ## license
 
