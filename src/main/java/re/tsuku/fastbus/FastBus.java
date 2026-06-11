@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class FastBus {
     private static final Handler[] EMPTY_HANDLERS = new Handler[0];
+    private static final EventInvoker[] EMPTY_INVOKERS = new EventInvoker[0];
     private static final ClassValue<List<HandlerFactory>> SUBSCRIBER_FACTORIES = new ClassValue<List<HandlerFactory>>() {
         @Override
         protected List<HandlerFactory> computeValue(Class<?> type) {
@@ -125,9 +126,9 @@ public final class FastBus {
             throw new NullPointerException("event");
         }
 
-        Handler[] snapshot = dispatchSlots.get(event.getClass()).snapshot(version, this);
-        for (Handler handler : snapshot) {
-            handler.call(event);
+        EventInvoker[] snapshot = dispatchSlots.get(event.getClass()).snapshot(version, this);
+        for (EventInvoker invoker : snapshot) {
+            invoker.call(event);
         }
         return event;
     }
@@ -180,9 +181,9 @@ public final class FastBus {
         method.setAccessible(true);
         try {
             MethodHandle handle = MethodHandles.lookup().unreflect(method);
-            MethodEventInvoker methodInvoker = createMethodEventInvoker(method, handle);
-            if (methodInvoker != null) {
-                return (bus, owner) -> new Handler(eventType, event -> methodInvoker.call(owner, event), priority,
+            MethodInvokerFactory invokerFactory = createMethodInvokerFactory(method, handle);
+            if (invokerFactory != null) {
+                return (bus, owner) -> new Handler(eventType, invokerFactory.create(owner), priority,
                         bus.nextSequence());
             }
             return (bus, owner) -> new Handler(eventType, createMethodInvoker(owner, method, handle), priority,
@@ -246,7 +247,7 @@ public final class FastBus {
         return event -> invoke(boundHandle, method, event);
     }
 
-    private static MethodEventInvoker createMethodEventInvoker(Method method, MethodHandle handle) {
+    private static MethodInvokerFactory createMethodInvokerFactory(Method method, MethodHandle handle) {
         if (throwsCheckedException(method)) {
             return null;
         }
@@ -255,13 +256,26 @@ public final class FastBus {
             CallSite site = LambdaMetafactory.metafactory(
                     MethodHandles.lookup(),
                     "call",
-                    MethodType.methodType(MethodEventInvoker.class),
-                    MethodType.methodType(void.class, Object.class, Event.class),
+                    MethodType.methodType(EventInvoker.class, method.getDeclaringClass()),
+                    MethodType.methodType(void.class, Event.class),
                     handle,
-                    MethodType.methodType(void.class, method.getDeclaringClass(), method.getParameterTypes()[0]));
-            return (MethodEventInvoker) site.getTarget().invokeExact();
+                    MethodType.methodType(void.class, method.getParameterTypes()[0]));
+            MethodHandle factory = site.getTarget().asType(MethodType.methodType(EventInvoker.class, Object.class));
+            return owner -> createMethodInvoker(factory, owner);
         } catch (Throwable ignored) {
             return null;
+        }
+    }
+
+    private static EventInvoker createMethodInvoker(MethodHandle factory, Object owner) {
+        try {
+            return (EventInvoker) factory.invokeExact(owner);
+        } catch (RuntimeException exception) {
+            throw exception;
+        } catch (Error error) {
+            throw error;
+        } catch (Throwable throwable) {
+            throw new IllegalStateException("unable to bind listener method", throwable);
         }
     }
 
@@ -307,7 +321,7 @@ public final class FastBus {
         }
     }
 
-    private Handler[] createDispatchSnapshot(Class<?> eventType) {
+    private EventInvoker[] createDispatchSnapshot(Class<?> eventType) {
         List<Handler> matching = new ArrayList<>();
         for (Class<?> dispatchType : DISPATCH_TYPES.get(eventType)) {
             HandlerBucket bucket = handlers.get(dispatchType);
@@ -318,10 +332,14 @@ public final class FastBus {
             }
         }
         if (matching.isEmpty()) {
-            return EMPTY_HANDLERS;
+            return EMPTY_INVOKERS;
         }
         Collections.sort(matching, Handler.ORDER);
-        return matching.toArray(new Handler[0]);
+        EventInvoker[] snapshot = new EventInvoker[matching.size()];
+        for (int index = 0, limit = snapshot.length; index < limit; index++) {
+            snapshot[index] = matching.get(index).invoker;
+        }
+        return snapshot;
     }
 
     private static Class<?>[] findDispatchTypes(Class<?> eventType) {
@@ -366,8 +384,8 @@ public final class FastBus {
     }
 
     @FunctionalInterface
-    private interface MethodEventInvoker {
-        void call(Object owner, Event event);
+    private interface MethodInvokerFactory {
+        EventInvoker create(Object owner);
     }
 
     @FunctionalInterface
@@ -479,22 +497,22 @@ public final class FastBus {
 
     private static final class DispatchSlot {
         private final Class<?> eventType;
-        private volatile Handler[] snapshot = EMPTY_HANDLERS;
+        private volatile EventInvoker[] snapshot = EMPTY_INVOKERS;
         private volatile long version = -1;
 
         private DispatchSlot(Class<?> eventType) {
             this.eventType = eventType;
         }
 
-        private Handler[] snapshot(long currentVersion, FastBus bus) {
-            Handler[] current = snapshot;
+        private EventInvoker[] snapshot(long currentVersion, FastBus bus) {
+            EventInvoker[] current = snapshot;
             if (version == currentVersion) {
                 return current;
             }
             return update(currentVersion, bus);
         }
 
-        private synchronized Handler[] update(long currentVersion, FastBus bus) {
+        private synchronized EventInvoker[] update(long currentVersion, FastBus bus) {
             if (version != currentVersion) {
                 snapshot = bus.createDispatchSnapshot(eventType);
                 version = currentVersion;
