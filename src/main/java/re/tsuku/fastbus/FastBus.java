@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class FastBus {
     private static final Handler[] EMPTY_HANDLERS = new Handler[0];
-    private static final EventInvoker[] EMPTY_INVOKERS = new EventInvoker[0];
+    private static final Listener<Event>[] EMPTY_LISTENERS = listenerArray(0);
     private static final ClassValue<List<HandlerFactory>> SUBSCRIBER_FACTORIES = new ClassValue<List<HandlerFactory>>() {
         @Override
         protected List<HandlerFactory> computeValue(Class<?> type) {
@@ -127,9 +127,9 @@ public final class FastBus {
             throw new NullPointerException("event");
         }
 
-        EventInvoker[] snapshot = dispatchSlots.get(event.getClass()).snapshot(version, this);
-        for (EventInvoker invoker : snapshot) {
-            invoker.call(event);
+        Listener<Event>[] snapshot = dispatchSlots.get(event.getClass()).snapshot(version, this);
+        for (Listener<Event> listener : snapshot) {
+            listener.call(event);
         }
         return event;
     }
@@ -263,7 +263,7 @@ public final class FastBus {
     }
 
     @SuppressWarnings("unchecked")
-    private <T extends Event> EventInvoker createListenerInvoker(Listener<? super T> listener) {
+    private <T extends Event> Listener<Event> createListenerInvoker(Listener<? super T> listener) {
         return event -> listener.call((T) event);
     }
 
@@ -286,20 +286,22 @@ public final class FastBus {
             CallSite site = LambdaMetafactory.metafactory(
                     lookup,
                     "call",
-                    MethodType.methodType(EventInvoker.class, method.getDeclaringClass()),
+                    MethodType.methodType(Listener.class, method.getDeclaringClass()),
                     MethodType.methodType(void.class, Event.class),
                     handle,
                     MethodType.methodType(void.class, method.getParameterTypes()[0]));
-            MethodHandle factory = site.getTarget().asType(MethodType.methodType(EventInvoker.class, Object.class));
+            MethodHandle factory = site.getTarget().asType(MethodType.methodType(Listener.class, Object.class));
             return owner -> bindMethodInvoker(factory, owner);
         } catch (Throwable throwable) {
             throw new IllegalStateException("unable to create listener method invoker: " + method, throwable);
         }
     }
 
-    private static EventInvoker bindMethodInvoker(MethodHandle factory, Object owner) {
+    private static Listener<Event> bindMethodInvoker(MethodHandle factory, Object owner) {
         try {
-            return (EventInvoker) factory.invokeExact(owner);
+            @SuppressWarnings("unchecked")
+            Listener<Event> listener = (Listener<Event>) factory.invokeExact(owner);
+            return listener;
         } catch (RuntimeException exception) {
             throw exception;
         } catch (Error error) {
@@ -309,8 +311,8 @@ public final class FastBus {
         }
     }
 
-    private static EventInvoker wrapChecked(Method method, EventInvoker invoker) {
-        return event -> invokeChecked(method, invoker, event);
+    private static Listener<Event> wrapChecked(Method method, Listener<Event> listener) {
+        return event -> invokeChecked(method, listener, event);
     }
 
     private static boolean throwsCheckedException(Method method) {
@@ -323,9 +325,9 @@ public final class FastBus {
         return false;
     }
 
-    private static void invokeChecked(Method method, EventInvoker invoker, Event event) {
+    private static void invokeChecked(Method method, Listener<Event> listener, Event event) {
         try {
-            invoker.call(event);
+            listener.call(event);
         } catch (RuntimeException exception) {
             throw exception;
         } catch (Error error) {
@@ -355,7 +357,7 @@ public final class FastBus {
         }
     }
 
-    private EventInvoker[] createDispatchSnapshot(Class<?> eventType) {
+    private Listener<Event>[] createDispatchSnapshot(Class<?> eventType) {
         List<Handler> matching = new ArrayList<>();
         for (Class<?> dispatchType : DISPATCH_TYPES.get(eventType)) {
             HandlerBucket bucket = handlers.get(dispatchType);
@@ -366,12 +368,12 @@ public final class FastBus {
             }
         }
         if (matching.isEmpty()) {
-            return EMPTY_INVOKERS;
+            return EMPTY_LISTENERS;
         }
         Collections.sort(matching, Handler.ORDER);
-        EventInvoker[] snapshot = new EventInvoker[matching.size()];
+        Listener<Event>[] snapshot = listenerArray(matching.size());
         for (int index = 0, limit = snapshot.length; index < limit; index++) {
-            snapshot[index] = matching.get(index).invoker;
+            snapshot[index] = matching.get(index).listener;
         }
         return snapshot;
     }
@@ -413,13 +415,8 @@ public final class FastBus {
     }
 
     @FunctionalInterface
-    private interface EventInvoker {
-        void call(Event event);
-    }
-
-    @FunctionalInterface
     private interface MethodInvokerFactory {
-        EventInvoker create(Object owner);
+        Listener<Event> create(Object owner);
     }
 
     @FunctionalInterface
@@ -440,13 +437,13 @@ public final class FastBus {
         };
 
         private final Class<? extends Event> eventType;
-        private final EventInvoker invoker;
+        private final Listener<Event> listener;
         private final int priority;
         private final long sequence;
 
-        private Handler(Class<? extends Event> eventType, EventInvoker invoker, int priority, long sequence) {
+        private Handler(Class<? extends Event> eventType, Listener<Event> listener, int priority, long sequence) {
             this.eventType = eventType;
-            this.invoker = invoker;
+            this.listener = listener;
             this.priority = priority;
             this.sequence = sequence;
         }
@@ -527,27 +524,32 @@ public final class FastBus {
 
     private static final class DispatchSlot {
         private final Class<?> eventType;
-        private volatile EventInvoker[] snapshot = EMPTY_INVOKERS;
+        private volatile Listener<Event>[] snapshot = EMPTY_LISTENERS;
         private volatile long version = -1;
 
         private DispatchSlot(Class<?> eventType) {
             this.eventType = eventType;
         }
 
-        private EventInvoker[] snapshot(long currentVersion, FastBus bus) {
-            EventInvoker[] current = snapshot;
+        private Listener<Event>[] snapshot(long currentVersion, FastBus bus) {
+            Listener<Event>[] current = snapshot;
             if (version == currentVersion) {
                 return current;
             }
             return update(currentVersion, bus);
         }
 
-        private synchronized EventInvoker[] update(long currentVersion, FastBus bus) {
+        private synchronized Listener<Event>[] update(long currentVersion, FastBus bus) {
             if (version != currentVersion) {
                 snapshot = bus.createDispatchSnapshot(eventType);
                 version = currentVersion;
             }
             return snapshot;
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Listener<Event>[] listenerArray(int capacity) {
+        return (Listener<Event>[]) new Listener<?>[capacity];
     }
 }

@@ -1,6 +1,7 @@
 package re.tsuku.fastbus;
 
 import org.junit.Test;
+import org.afterlike.openutils.module.handler.ExternalSubscriber;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,6 +53,17 @@ public final class FastBusTest {
         bus.post(new SimpleEvent());
 
         assertEquals(1, subscriber.count);
+    }
+
+    @Test
+    public void privateAnnotatedMethodsInOtherPackagesReceiveMatchingEvents() {
+        FastBus bus = new FastBus();
+        ExternalSubscriber subscriber = new ExternalSubscriber();
+
+        bus.subscribe(subscriber);
+        bus.post(new SimpleEvent());
+
+        assertEquals(1, subscriber.count());
     }
 
     @Test
@@ -213,7 +225,7 @@ public final class FastBusTest {
     private interface ParentEvent extends Event {
     }
 
-    private static final class SimpleEvent implements Event {
+    public static final class SimpleEvent implements Event {
     }
 
     private static final class ChildEvent implements ParentEvent {
