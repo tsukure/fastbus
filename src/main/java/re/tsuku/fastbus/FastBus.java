@@ -23,11 +23,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * a small typed event bus.
+ * main event bus for subscribing listeners and posting events.
  *
  * <p>
- * subscriptions are indexed by event type. posting uses a cached immutable handler snapshot for the concrete event
- * class, so dispatch does not scan unrelated listeners.
+ * listeners can be registered directly with {@link #subscribe(Class, Listener)} or discovered from an object with
+ * {@link Subscribe} methods and fields using {@link #subscribe(Object)}.
+ * </p>
+ *
+ * <p>
+ * subscriptions are indexed by event type. posting uses cached immutable listener snapshots for the concrete event
+ * class, so dispatch stays on the matching listener set.
  * </p>
  */
 public final class FastBus {
