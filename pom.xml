@@ -10,7 +10,7 @@
     <packaging>jar</packaging>
 
     <name>fastbus</name>
-    <description>a small, fast java event bus.</description>
+    <description>a blazing fast java event bus.</description>
     <url>https://maven.tsuku.re</url>
 
     <licenses>

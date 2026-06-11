@@ -7,7 +7,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="license"></a>
 </p>
 
-`fastbus` is a small java event bus for projects that need simple typed events without a framework.
+`fastbus` is a blazing fast java event bus for projects that need simple typed events without a framework.
 
 ## install
 
@@ -153,17 +153,17 @@ for a shorter local run:
 java -jar target/benchmarks.jar 'post_.*|subscribe_.*' -wi 2 -i 3 -f 1
 ```
 
-rough local jmh numbers, averaged from a few short runs on jdk 21:
+rough local jmh numbers, averaged from short runs on jdk 21:
 
 | benchmark                                 |  throughput |
 |-------------------------------------------|------------:|
-| fastbus direct post                       | ~220m ops/s |
-| fastbus annotated post                    | ~165m ops/s |
+| fastbus direct post                       | ~270m ops/s |
+| fastbus annotated post                    | ~208m ops/s |
 | greenrobot eventbus post                  |  ~16m ops/s |
 | guava eventbus post                       |  ~10m ops/s |
-| fastbus direct subscribe/unsubscribe      | ~6.5m ops/s |
+| fastbus direct subscribe/unsubscribe      | ~8.7m ops/s |
 | guava eventbus subscribe/unsubscribe      | ~5.5m ops/s |
-| fastbus annotated subscribe/unsubscribe   | ~900k ops/s |
+| fastbus annotated subscribe/unsubscribe   | ~5.3m ops/s |
 | greenrobot eventbus subscribe/unsubscribe | ~200k ops/s |
 
 your mileage may vary a bit depending on jvm, hardware, and listener shape.
